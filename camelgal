@@ -1,0 +1,344 @@
+#!/usr/bin/perl
+use warnings; use 5.026; use utf8;
+use open ':std', ':encoding(UTF-8)';
+no warnings qw//;
+
+use Class::Struct;               # Built-in
+use Cwd;                         # Built-in
+use Encode qw/decode/;           # Built-in
+use File::Copy;                  # Built-in
+use File::Find;                  # Built-in
+use File::Glob ':bsd_glob';      # Built-in
+use Getopt::Long;                # Built-in
+use Pod::Usage;                  # Built-in
+use Config::IniFiles;            # Installed by Apt
+use File::BaseDir;               # Installed by Apt
+use File::MimeInfo::Magic;       # Installed by Apt
+use Image::ExifTool qw(:Public); # Installed by Apt
+use Text::Caml;                  # Installed by CPAN
+
+my $start_dir = getcwd;
+my $bd = File::BaseDir->new();
+my $engine = Text::Caml->new(default_partial_extension => 'caml');
+
+struct( PIC => {
+	name   => '$',
+	title  => '$',
+	thumb  => '$',
+	medium => '$',
+	type   => '$',
+	info   => '$',
+	width  => '$',
+	height => '$',
+	next   => 'PIC',
+	prev   => 'PIC',
+});
+
+struct( DIR => {
+	name  => '$',
+	title => '$',
+	thumb => '$',
+	size  => '$',
+});
+
+########################################################################
+
+sub mime_type($);
+
+sub pickone(@)  {$_[int rand scalar @_]}
+sub make_dir($) {my $dir = shift; mkdir $dir if not -e $dir; die if not -e $dir;}
+#~ sub dash_e ($)  {return -e $_[0] ? $_[0] : undef}
+#~ sub dash_d ($)  {return -d $_[0] ? $_[0] : undef}
+
+sub dash_e (@)  {for (@_){return $_ if -e $_} undef}
+sub dash_d (@)  {for (@_){return $_ if -d $_} undef}
+
+########################################################################
+
+my $local_data_dir     =  $start_dir . '/.camelgal';
+my @local_config_files = ($start_dir . '/.camelgal.ini', $local_data_dir . '/camelgal.ini');
+
+my $data_dir    = dash_d ($local_data_dir)     || scalar $bd->data_dirs('camelgal');
+my $config_file = dash_e (@local_config_files) || scalar $bd->config_files('camelgal', 'default.ini');
+
+my $cfg = Config::IniFiles->new( -file => $config_file ) if $config_file;
+my $main_title = $cfg->val ('MAIN', 'title', 'Gallery');
+my $src_dir = $cfg->val ('MAIN', 'source', '.');
+my $dst_dir = $cfg->val ('MAIN', 'destination', '.');
+my ($clean, $help, $man);
+
+GetOptions (
+	"title|t=s"        => \$main_title,
+	"source|s=s"       => \$src_dir,
+	"destination|d=s"  => \$dst_dir,
+	"clean|c"          => \$clean,
+	'help|?'           => \$help,
+	man                => \$man)
+or pod2usage(2);
+
+pod2usage(1) if $help;
+pod2usage(-exitval => 0, -verbose => 2) if $man;
+
+$engine->set_templates_path($data_dir);
+
+my @convert = qw/gm convert -strip/;
+my @mogrify = qw/gm mogrify -strip/;
+
+########################################################################
+
+# Remove contents of target directory if $clean is TRUE;
+if ($clean) {
+	if ($src_dir ne $dst_dir) {
+		finddepth( sub { rmdir if -d; unlink if -e }, $dst_dir );
+		rmdir $dst_dir;
+	}
+	exit;
+}
+
+# Clean contents of target directory if $clean is TRUE;
+say 'Scanning destination for obsolete files...';
+finddepth({
+	wanted => \&prune_dest,
+	no_chdir => 1,
+}, $dst_dir);
+
+find({
+	wanted => \&make_dest,
+	preprocess => sub {sort grep !/^[._]/, @_},
+	no_chdir => 1,
+}, $src_dir);
+
+find({
+	wanted => \&copy_inifiles,
+	preprocess => sub {grep /\.camelgal\.ini$/, @_},
+	no_chdir => 1,
+}, $src_dir);
+
+########################################################################
+
+chdir $dst_dir;
+
+finddepth(
+	sub {
+		rmdir if -d;
+		unlink if /\.html$/
+	},
+	$dst_dir
+) if $src_dir ne $dst_dir;
+
+my (%allpics, %alldirs);
+
+finddepth({
+	wanted => sub { chdir $_; &create_index; chdir '..'; },
+	preprocess => sub {sort grep !/^[._]/, grep {-d} @_},
+}, '.');
+
+########################################################################
+# Helper subroutines
+
+# Remove old files from target directory.
+sub prune_dest {
+	return if -d;
+	my $test_file = $_;
+	$test_file =~ s{$dst_dir/?}{};
+	$test_file =~ s{\.medium/|\.thumbs/}{};
+	return if -e $test_file;
+	unlink $_;
+}
+
+# Create and/or update destination, including original files.
+sub make_dest {
+	my $mime_type =  mime_type $_;
+	return undef unless -d or $mime_type;
+	my $dest = $_;
+	$dest =~ s/^$src_dir/$dst_dir/;
+	$dest =~ s/\.bmp$/.png/i;
+	$dest =~ s/\.tiff?$/.jpg/i;
+	if (-d) {
+		make_dir $dest;
+	} elsif (not -e $dest or -M $_ < -M $dest) {
+		say 'Updating ',  decode 'UTF-8', $dest;
+		if ($mime_type eq 'TIFF') {
+			system @convert, '-format', 'jpg', $_, $dest;
+		} elsif ($mime_type eq 'BMP') {
+			system @convert, '-format', 'png', $_, $dest;
+		} else {
+			#~ copy $_, $dest;
+			system @convert, $_, $dest;
+		}
+	}
+}
+
+sub copy_inifiles {
+	return undef unless /\.camelgal\.ini$/;
+	my $dest = $_;
+	$dest =~ s/^$src_dir/$dst_dir/;
+	return if -e $dest and -M $_ >= -M $dest;
+	say 'Updating ', $dest;
+	copy $_, $dest;
+}
+
+# Create the index page for each directory.
+sub create_index {
+	my $cfg;
+	$cfg = Config::IniFiles->new( -file => '.camelgal.ini' ) if -e '.camelgal.ini';
+	my $cfg_title = $cfg->val ('MAIN', 'title', $_ eq '.' ? $main_title : $_) if defined $cfg;
+	my $index_title = defined $cfg_title ? $cfg_title : $_ eq '.' ? $main_title : $_;
+
+	say 'Processing "' , $index_title, '"';
+
+	my @dirs;
+	push @dirs, new DIR(name => decode 'UTF-8', $_) for grep !/^\./,  grep !/^_/, grep {-d} <*>;
+
+	for my $dir (@dirs) {
+		my $name = $dir->name;
+		$dir->thumb(pickone( <$name/.thumbs/*>) or '/images/folder-image.svg');
+		$name =~ s/(.+)\..+/$1/;
+		$name =~ s/_/ /g;
+		$name = $cfg->val ('TITLES', $_, $name) if defined $cfg;
+		$dir->title($name);
+		my $num_pics = scalar grep {mime_type $_} <$name/*>;
+		my $num_dirs = scalar grep {-d} <"$name/*">; 
+		my $dirs = $num_dirs == 1 ? 'folder' : 'folders';
+		my $pics = $num_pics == 1 ? 'image' : 'images';
+		if ($num_dirs and $num_pics) {
+			$dir->size("<br>[$num_dirs $dirs, $num_pics $pics]")
+		} elsif ($num_dirs) {
+			$dir->size("<br>[$num_dirs $dirs]")
+		} elsif ($num_pics) {
+			$dir->size("<br>[$num_pics $pics]")
+		}
+	}
+
+	my @pics;
+	push @pics, new PIC(name => decode 'UTF-8', $_) for grep {mime_type $_} grep {-f} <*>;
+
+	while (my ($i,$img) = each @pics) {
+		$img->thumb('.thumbs/' . $img->name);
+		$img->medium('.medium/' . $img->name);
+		$img->info(ImageInfo $img->name);
+		$img->width(int 0.5+ $img->info->{ImageWidth});
+		$img->height(int 0.5+ $img->info->{ImageHeight});
+		my $title = $img->name;
+		$title =~ s/(.+)\..+/$1/;
+		$title =~ s/_/ /g;
+		$title = $cfg->val ('TITLES', $img->name, $title) if defined $cfg;
+		$img->title($title);
+		$img->type(mime_type $img->name);
+		$img->next($pics[($i+1) % scalar @pics]);
+		$img->prev($pics[$i-1]);
+	}
+
+	make_dir '.thumbs';
+	make_dir '.medium';
+	for (@pics) {
+		my $file = $_->name;
+		my $thumb = $_->thumb;
+		my $medium = $_->medium;
+		if (not -e $thumb or -M $thumb > -M $file or not -e $medium or -M $medium > -M $file) {
+			say "\t$file";
+		}
+		my ($width, $height) = ($_->width, $_->height);
+		if (not -e $thumb or -M $thumb > -M $file) {
+			if ($_->type eq "SVG") {
+				my @max_dimension = $width > $height ? ('-w', 256) : ('-h', 256);
+				system 'rsvg-convert', @max_dimension, '-a', '-o', $thumb, $file;
+			} else {
+				system @convert, '-resize', '256x256>', $file, $thumb;
+			}
+		}
+		if (not -e $medium or -M $medium > -M $file) {
+			if ($_->type eq "SVG") {
+				my @max_dimension = $width * .75 > $height ? ('-w', 800) : ('-h', 600);
+				system 'rsvg-convert', @max_dimension, '-a', '-o', $medium, $file;
+			} else {
+				system @convert, '-resize', '800x600>', $file, $medium;
+			}
+		}
+	}
+
+	open my $index, '>', 'index.html';
+	say $index $engine->render_file('index.caml', {
+		page_title => $index_title,
+		haspics => $pics[0] ? 1 : undef,
+		hasdirs => $dirs[0] ? 1 : undef,
+		pics => \@pics,
+		dirs => \@dirs,
+	});
+	close $index;
+
+	for my $pic (@pics) {
+		open my $html, '>', $pic->name . '.html';
+		say $html $engine->render_file('image.caml', {
+			pic => $pic,
+		});
+		close $html;
+	}
+}
+
+sub mime_type($) {
+	my $mime_type = mimetype shift;
+	return undef if not defined $mime_type;
+	return 'BMP'  if $mime_type eq 'image/bmp';
+	return 'JPEG' if $mime_type eq 'image/jpeg';
+	return 'GIF'  if $mime_type eq 'image/gif';
+	return 'PNG'  if $mime_type eq 'image/png';
+	return 'SVG'  if $mime_type eq 'image/svg+xml';
+	return 'TIFF' if $mime_type eq 'image/tiff';
+	return undef;
+}
+
+=head1 NAME
+
+camelgal
+
+=head1 SYNOPSIS
+
+sample [options] [file ...]
+
+ Options:
+   -help            brief help message
+   -man             full documentation
+   -title -t        main title
+   -source -s       source directory
+   -destination -d  destination directory
+   -clean -c        remove the destination directory
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=item B<-title>
+
+Set the main title
+
+=item B<-source>
+
+Set the source directory; defaults to the current working directory
+
+=item B<-destination>
+
+Set the destination directory; defaults to the current working directory
+
+=item B<-clean>
+
+Remove the destination directory; use with caution
+
+=back
+
+=head1 DESCRIPTION
+
+B<camelgal> copies image files from the source directory to the
+destination directory (provided they're different), then generates
+a web album in the destination.
+
+=cut
+

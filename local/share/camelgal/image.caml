@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+{{#pic}}
+<html lang="en">
+<title>{{title}}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/css/style.css">
+<style>
+	figure {margin-left: auto; margin-right: auto; }
+	figure.constrained figcaption {max-width: 256px}
+	h1 {text-align: center}
+	body {max-width: 100%; margin: 0 1em; background: none; border: none;}
+	hr {clear: both}
+	.fl, .fr {width: 260px}
+	a {text-decoration: none !important}
+	center {margin: 0; padding: 0}
+</style>
+<center><a href="index.html">⇧ Up ⇧</a></center>
+<hr>
+
+{{#prev}}
+<nav class='fl'>
+<figure class="constrained">
+<a href="{{name}}.html">
+⇦  Previous<br>
+<img src="{{thumb}}"></a>
+<figcaption>{{title}}</figcaption>
+</figure>
+</nav>
+{{/prev}}
+
+{{#next}}
+<nav class='fr'>
+<figure class="constrained">
+<a href="{{name}}.html">
+Next ⇨<br>
+<img src="{{thumb}}"></a>
+<figcaption>{{title}}</figcaption>
+</figure>
+</nav>
+{{/next}}
+
+<a href="{{name}}"><figure>
+<h1>{{title}}</h1>
+<img src="{{medium}}">
+<figcaption>
+{{title}}<br>{{width}}x{{height}}<br>{{info.FileSize}} {{info.FileType}}
+{{#info.comment}}<br>{{info.comment}}{{/info.comment}}
+</figcaption>
+</figure></a>
+{{/pic}}
+
+
+<hr>

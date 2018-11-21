@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<title>{{page_title}}</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/css/style.css">
+<style>
+	div.figure {display: inline-block; margin: 1ex; max-width: 256px;}
+	figcaption {max-width: 256px}
+	h1 {text-align: center}
+	body {max-width: 100%; margin: 0 1em; background: none; border: none;}
+	hr {clear: both}
+	.larger {font-size: larger}
+</style>
+<hr>
+<nav class='fl'><a href="..">Up ⇧</a></nav>
+<nav class='fr'><a href="..">⇧ Up</a></nav>
+<h1>{{page_title}}</h1>
+
+{{#hasdirs}}
+<hr>
+<h2>Sub-Galleries</h2>
+<div class=flex>
+{{#dirs}}
+<a href="{{name}}">
+<div class="figure">
+<img src="{{thumb}}">
+<br>
+{{title}}{{&size}}
+</div></a>
+{{/dirs}}
+
+</div>
+{{/hasdirs}}
+
+{{#haspics}}
+<hr>
+<div class=flex>
+{{#pics}}
+<a href="{{name}}.html">
+<div class="figure">
+<img src="{{thumb}}">
+<br>{{title}}
+<p>{{width}}x{{height}}<br>{{info.FileSize}} {{info.FileType}}
+{{#info.comment}}<p>{{info.comment}}{{/info.comment}}
+</div></a>
+{{/pics}}
+
+</div>
+{{/haspics}}
+
+<hr>
